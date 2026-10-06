@@ -81,6 +81,55 @@ function link_to(array $over = []): string {
     return 'index.php?' . http_build_query(array_filter($q, fn($v) => $v !== '' && $v !== 'all' && $v !== 'newest'));
 }
 
+function e(string $s): string {
+    return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE);
+}
+
+// Days from today until the due date (negative = in the past)
+function daysUntil(string $due): int {
+    return (int) round((strtotime($due) - strtotime(date('Y-m-d'))) / 86400);
+}
+
+// Human-friendly due label + tone ('late', 'soon' or '')
+function dueInfo(array $t): ?array {
+    if ($t['due'] === '') return null;
+    $days = daysUntil($t['due']);
+    $sameYear = substr($t['due'], 0, 4) === date('Y');
+    $date = date($sameYear ? 'M j' : 'M j, Y', strtotime($t['due']));
+
+    if ($t['completed']) return ['label' => $date, 'tone' => ''];
+    if ($days < 0) return ['label' => 'Overdue · ' . abs($days) . (abs($days) === 1 ? ' day' : ' days'), 'tone' => 'late'];
+    if ($days === 0) return ['label' => 'Due today', 'tone' => 'soon'];
+    if ($days === 1) return ['label' => 'Due tomorrow', 'tone' => 'soon'];
+    if ($days <= 7) return ['label' => "Due in $days days", 'tone' => ''];
+    return ['label' => 'Due ' . $date, 'tone' => ''];
+}
+
+function icon(string $name, int $size = 18, string $class = ''): string {
+    static $paths = [
+        'check'    => '<path d="M20 6 9 17l-5-5"/>',
+        'plus'     => '<path d="M12 5v14M5 12h14"/>',
+        'search'   => '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+        'edit'     => '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+        'trash'    => '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/>',
+        'calendar' => '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+        'book'     => '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/>',
+        'clock'    => '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+        'alert'    => '<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>',
+        'done'     => '<circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+        'layers'   => '<path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/>',
+        'sun'      => '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+        'moon'     => '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
+        'x'        => '<path d="M18 6 6 18M6 6l12 12"/>',
+        'inbox'    => '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1z"/>',
+        'chevron'  => '<path d="m6 9 6 6 6-6"/>',
+        'sort'     => '<path d="M3 6h18M6 12h12M10 18h4"/>',
+        'checks'   => '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
+        'cap'      => '<path d="M22 10 12 5 2 10l10 5 10-5z"/><path d="M6 12v5c3 2 9 2 12 0v-5"/>',
+    ];
+    return '<svg class="icon ' . $class . '" width="' . $size . '" height="' . $size . '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . $paths[$name] . '</svg>';
+}
+
 $editingTask = null;
 $error = $_SESSION['error'] ?? '';
 unset($_SESSION['error']);
@@ -132,6 +181,7 @@ $total = count($all);
 $done = count(array_filter($all, fn($t) => $t['completed']));
 $pending = $total - $done;
 $overdue = count(array_filter($all, 'isOverdue'));
+$dueToday = count(array_filter($all, fn($t) => !$t['completed'] && $t['due'] === date('Y-m-d')));
 $progress = $total > 0 ? round(($done / $total) * 100) : 0;
 
 // Filter, search, sort
@@ -159,9 +209,47 @@ usort($tasks, function ($a, $b) use ($sort) {
 });
 
 $v = $editingTask ?? ['text' => '', 'subject' => '', 'priority' => 'medium', 'due' => ''];
-$formQuery = $_SERVER['QUERY_STRING'] ?? '';
-?>
 
+// Sidebar: upcoming deadlines
+$upcoming = array_values(array_filter($all, fn($t) => !$t['completed'] && $t['due'] !== ''));
+usort($upcoming, fn($a, $b) => $a['due'] <=> $b['due']);
+$upcoming = array_slice($upcoming, 0, 4);
+
+// Sidebar: progress per subject (case-insensitive grouping)
+$subjects = [];
+foreach ($all as $t) {
+    if ($t['subject'] === '') continue;
+    $key = strtolower($t['subject']);
+    $subjects[$key] ??= ['name' => $t['subject'], 'total' => 0, 'done' => 0];
+    $subjects[$key]['total']++;
+    if ($t['completed']) $subjects[$key]['done']++;
+}
+uasort($subjects, fn($a, $b) => $b['total'] <=> $a['total']);
+$subjects = array_slice($subjects, 0, 5);
+
+// Hero summary line
+if ($total === 0) {
+    $summary = 'Your planner is empty. Add your first task to get the semester rolling.';
+} elseif ($pending === 0) {
+    $summary = 'All caught up — every task is done. Great work!';
+} else {
+    $parts = [];
+    if ($dueToday) $parts[] = "$dueToday due today";
+    if ($overdue) $parts[] = "$overdue overdue";
+    $summary = "You have $pending pending " . ($pending === 1 ? 'task' : 'tasks')
+        . ($parts ? ' — ' . implode(' and ', $parts) : '') . '.';
+}
+
+$tabs = [
+    'all' => ['All', $total],
+    'pending' => ['Pending', $pending],
+    'done' => ['Completed', $done],
+    'overdue' => ['Overdue', $overdue],
+];
+
+$ringCirc = 2 * M_PI * 52;
+$ringOffset = $ringCirc * (1 - $progress / 100);
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -169,314 +257,417 @@ $formQuery = $_SERVER['QUERY_STRING'] ?? '';
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Student Task Dashboard</title>
 
-    <style>
-        :root {
-            --primary: #1B2A4A;
-            --secondary: #4A5670;
-            --paper: #F4EFE3;
-            --card: #FFFDF8;
-            --border: #C9BFA5;
-            --red: #A13D2C;
-            --green: #5B7B54;
-            --amber: #B7791F;
-        }
+    <script>
+        // Apply saved theme before paint to avoid a flash
+        (function () {
+            try {
+                var t = localStorage.getItem('theme');
+                if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+            } catch (e) {}
+        })();
+    </script>
 
-        * { box-sizing: border-box; }
-
-        body {
-            margin: 0;
-            padding: 30px 20px;
-            background: var(--paper);
-            color: var(--primary);
-            font-family: Arial, sans-serif;
-        }
-
-        .dashboard { max-width: 900px; margin: auto; }
-        header { margin-bottom: 30px; }
-        .kicker { color: var(--red); font-size: 13px; font-weight: bold; margin-bottom: 5px; }
-        h1 { margin: 0; font-size: 34px; }
-        .subtitle { color: var(--secondary); margin-top: 8px; }
-
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 15px;
-            margin-bottom: 25px;
-        }
-
-        .stat-card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 3px 8px rgba(0,0,0,0.05);
-        }
-
-        .stat-card h3 { margin: 0; font-size: 14px; color: var(--secondary); }
-        .stat-number { font-size: 30px; font-weight: bold; margin-top: 8px; }
-        .stat-card.warn .stat-number { color: var(--red); }
-
-        .progress-section {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 25px;
-        }
-
-        .progress-header { display: flex; justify-content: space-between; margin-bottom: 10px; font-weight: bold; }
-        .progress-bar { height: 12px; background: #E2DDCF; border-radius: 20px; overflow: hidden; }
-        .progress-fill { height: 100%; width: <?= $progress ?>%; background: var(--green); border-radius: 20px; }
-
-        .task-container {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 25px;
-        }
-
-        .task-container h2 { margin-top: 0; }
-
-        .task-form {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr;
-            gap: 10px;
-            margin-bottom: 25px;
-        }
-
-        .task-form .wide { grid-column: 1 / -1; }
-        .form-actions { grid-column: 1 / -1; display: flex; gap: 10px; }
-
-        input[type=text], input[type=date], input[type=search], select {
-            width: 100%;
-            padding: 12px;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            font-size: 15px;
-            background: white;
-            color: var(--primary);
-        }
-
-        button, .btn-cancel {
-            border: none;
-            border-radius: 6px;
-            padding: 12px 18px;
-            cursor: pointer;
-            text-decoration: none;
-            font-size: 14px;
-        }
-
-        .btn-primary { background: var(--primary); color: white; }
-        .btn-cancel { background: #ddd; color: var(--primary); }
-        .btn-light { background: #E9E3D2; color: var(--primary); padding: 8px 12px; font-size: 13px; }
-
-        .toolbar { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
-        .toolbar input[type=search] { flex: 1; min-width: 160px; padding: 10px; }
-        .toolbar select { width: auto; padding: 10px; }
-
-        .tabs { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-        .tab {
-            padding: 6px 14px;
-            border: 1px solid var(--border);
-            border-radius: 20px;
-            font-size: 13px;
-            color: var(--secondary);
-            text-decoration: none;
-        }
-        .tab.active { background: var(--primary); border-color: var(--primary); color: white; }
-
-        .task-list { list-style: none; padding: 0; margin: 0; }
-
-        .task-row {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 15px 0;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .task-row:last-child { border-bottom: none; }
-        .toggle-form, .delete-form, .bulk-form { margin: 0; }
-
-        .check-btn {
-            width: 25px;
-            height: 25px;
-            padding: 0;
-            border: 2px solid var(--secondary);
-            border-radius: 50%;
-            background: white;
-            color: white;
-        }
-
-        .completed .check-btn { background: var(--green); border-color: var(--green); }
-
-        .task-main { flex: 1; }
-        .completed .task-text { text-decoration: line-through; color: var(--secondary); }
-
-        .meta { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; font-size: 12px; }
-        .badge { padding: 2px 8px; border-radius: 10px; background: #E9E3D2; color: var(--secondary); }
-        .badge.high { background: #F6E2DC; color: var(--red); }
-        .badge.medium { background: #F7EBCF; color: var(--amber); }
-        .badge.low { background: #E1EBDD; color: var(--green); }
-        .due { color: var(--secondary); padding: 2px 0; }
-        .due.late { color: var(--red); font-weight: bold; }
-
-        .actions { display: flex; gap: 10px; align-items: center; }
-        .edit { color: var(--secondary); text-decoration: none; font-size: 13px; }
-        .delete { background: none; color: var(--red); padding: 0; font-size: 13px; }
-
-        .bulk { display: flex; gap: 10px; margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border); flex-wrap: wrap; }
-
-        .empty { text-align: center; padding: 25px; color: var(--secondary); }
-        .error { background: #F6E2DC; color: var(--red); padding: 10px; border-radius: 6px; margin-bottom: 15px; }
-
-        @media (max-width: 600px) {
-            .stats { grid-template-columns: 1fr 1fr; }
-            .task-form { grid-template-columns: 1fr; }
-            .task-row { flex-wrap: wrap; }
-            .actions { width: 100%; margin-left: 37px; }
-        }
-    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=<?= filemtime(__DIR__ . '/style.css') ?>">
 </head>
 <body>
 
-<div class="dashboard">
+<div class="app">
 
-    <header>
-        <p class="kicker">SEMESTER PLANNER</p>
-        <h1>Student Task Dashboard</h1>
-        <p class="subtitle">Manage your school tasks and track your progress.</p>
+    <header class="topbar">
+        <div class="brand">
+            <div class="brand-mark"><?= icon('cap', 22) ?></div>
+            <div>
+                <p class="brand-name">Semester Planner</p>
+                <p class="brand-sub">Student Task Dashboard</p>
+            </div>
+        </div>
+        <div class="topbar-right">
+            <span class="today-chip"><?= icon('calendar', 16) ?><span data-today><?= date('l, M j') ?></span></span>
+            <button type="button" class="icon-btn outlined theme-toggle" id="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+                <?= icon('moon', 18, 'icon-moon') ?><?= icon('sun', 18, 'icon-sun') ?>
+            </button>
+        </div>
     </header>
 
-    <section class="stats">
-        <div class="stat-card"><h3>Total Tasks</h3><div class="stat-number"><?= $total ?></div></div>
-        <div class="stat-card"><h3>Completed</h3><div class="stat-number"><?= $done ?></div></div>
-        <div class="stat-card"><h3>Pending</h3><div class="stat-number"><?= $pending ?></div></div>
-        <div class="stat-card <?= $overdue ? 'warn' : '' ?>"><h3>Overdue</h3><div class="stat-number"><?= $overdue ?></div></div>
-    </section>
-
-    <section class="progress-section">
-        <div class="progress-header">
-            <span>Overall Progress</span>
-            <span><?= $progress ?>%</span>
-        </div>
-        <div class="progress-bar"><div class="progress-fill"></div></div>
-    </section>
-
-    <section class="task-container">
-        <h2><?= $editingTask ? 'Edit Task' : 'My Tasks' ?></h2>
-
-        <?php if ($error): ?>
-            <p class="error"><?= htmlspecialchars($error) ?></p>
-        <?php endif; ?>
-
-        <form method="POST" class="task-form">
-            <?= csrf() ?>
-            <input type="hidden" name="action" value="<?= $editingTask ? 'update' : 'add' ?>">
-            <?php if ($editingTask): ?>
-                <input type="hidden" name="id" value="<?= htmlspecialchars($editingTask['id']) ?>">
-            <?php endif; ?>
-
-            <input class="wide" type="text" name="task" value="<?= htmlspecialchars($v['text']) ?>" placeholder="What do you need to get done?" required>
-            <input type="text" name="subject" value="<?= htmlspecialchars($v['subject']) ?>" placeholder="Subject (e.g. Math)" maxlength="30">
-            <select name="priority" aria-label="Priority">
-                <?php foreach (array_keys(PRIORITIES) as $p): ?>
-                    <option value="<?= $p ?>" <?= $v['priority'] === $p ? 'selected' : '' ?>><?= ucfirst($p) ?> priority</option>
-                <?php endforeach; ?>
-            </select>
-            <input type="date" name="due" value="<?= htmlspecialchars($v['due']) ?>" aria-label="Due date">
-
-            <div class="form-actions">
-                <button type="submit" class="btn-primary"><?= $editingTask ? 'Save' : 'Add Task' ?></button>
-                <?php if ($editingTask): ?><a href="<?= link_to() ?>" class="btn-cancel">Cancel</a><?php endif; ?>
+    <section class="hero">
+        <div class="hero-copy">
+            <p class="hero-eyebrow">Student Task Dashboard</p>
+            <h1><span data-greeting>Welcome back</span> 👋</h1>
+            <p class="hero-text"><?= e($summary) ?></p>
+            <div class="hero-actions">
+                <a href="#composer" class="btn btn-white" data-focus-new><?= icon('plus', 16) ?>New task</a>
+                <?php if ($overdue): ?>
+                    <a href="<?= link_to(['filter' => 'overdue']) ?>" class="btn btn-glass"><?= icon('alert', 16) ?>Review overdue</a>
+                <?php endif; ?>
             </div>
-        </form>
-
-        <div class="tabs">
-            <?php foreach (['all' => 'All', 'pending' => 'Pending', 'done' => 'Completed', 'overdue' => 'Overdue'] as $key => $label): ?>
-                <a class="tab <?= $filter === $key ? 'active' : '' ?>" href="<?= link_to(['filter' => $key]) ?>"><?= $label ?></a>
-            <?php endforeach; ?>
         </div>
 
-        <form method="GET" class="toolbar">
-            <input type="hidden" name="filter" value="<?= htmlspecialchars($filter) ?>">
-            <input type="search" name="q" value="<?= htmlspecialchars($search) ?>" placeholder="Search tasks or subjects">
-            <select name="sort" aria-label="Sort tasks" onchange="this.form.submit()">
-                <option value="newest" <?= $sort === 'newest' ? 'selected' : '' ?>>Newest first</option>
-                <option value="due" <?= $sort === 'due' ? 'selected' : '' ?>>Due date</option>
-                <option value="priority" <?= $sort === 'priority' ? 'selected' : '' ?>>Priority</option>
-                <option value="az" <?= $sort === 'az' ? 'selected' : '' ?>>A to Z</option>
-            </select>
-            <button type="submit" class="btn-light">Search</button>
-        </form>
+        <div class="ring" role="img" aria-label="<?= $progress ?>% of tasks completed">
+            <svg viewBox="0 0 120 120">
+                <circle class="ring-track" cx="60" cy="60" r="52" fill="none" stroke-width="10"/>
+                <circle class="ring-fill" cx="60" cy="60" r="52" fill="none" stroke-width="10" stroke-linecap="round"
+                        stroke-dasharray="<?= round($ringCirc, 2) ?>" stroke-dashoffset="<?= round($ringOffset, 2) ?>"
+                        <?= $progress == 0 ? 'stroke-opacity="0"' : '' ?>/>
+            </svg>
+            <div class="ring-label">
+                <div class="ring-value"><?= $progress ?>%</div>
+                <div class="ring-caption">completed</div>
+            </div>
+        </div>
+    </section>
 
-        <ul class="task-list">
-            <?php if (empty($tasks)): ?>
-                <li class="empty"><?= $total ? 'No tasks match this view.' : 'No tasks yet. Add your first task above.' ?></li>
-            <?php endif; ?>
+    <section class="stats">
+        <div class="stat">
+            <div class="stat-icon total"><?= icon('layers', 22) ?></div>
+            <div><p class="stat-label">Total tasks</p><p class="stat-value"><?= $total ?></p></div>
+        </div>
+        <div class="stat">
+            <div class="stat-icon done"><?= icon('done', 22) ?></div>
+            <div><p class="stat-label">Completed</p><p class="stat-value"><?= $done ?></p></div>
+        </div>
+        <div class="stat">
+            <div class="stat-icon pending"><?= icon('clock', 22) ?></div>
+            <div><p class="stat-label">Pending</p><p class="stat-value"><?= $pending ?></p></div>
+        </div>
+        <div class="stat <?= $overdue ? 'is-alert' : '' ?>">
+            <div class="stat-icon overdue"><?= icon('alert', 22) ?></div>
+            <div><p class="stat-label">Overdue</p><p class="stat-value"><?= $overdue ?></p></div>
+        </div>
+    </section>
 
-            <?php foreach ($tasks as $task): ?>
-                <li class="task-row <?= $task['completed'] ? 'completed' : '' ?>">
+    <div class="layout">
 
-                    <form method="POST" class="toggle-form">
-                        <?= csrf() ?>
-                        <input type="hidden" name="action" value="toggle">
-                        <input type="hidden" name="id" value="<?= htmlspecialchars($task['id']) ?>">
-                        <button type="submit" class="check-btn" aria-label="Toggle complete"><?= $task['completed'] ? '✓' : '' ?></button>
+        <main class="main">
+
+            <form method="POST" class="card composer <?= $editingTask ? 'is-editing' : '' ?>" id="composer">
+                <?= csrf() ?>
+                <input type="hidden" name="action" value="<?= $editingTask ? 'update' : 'add' ?>">
+                <?php if ($editingTask): ?>
+                    <input type="hidden" name="id" value="<?= e($editingTask['id']) ?>">
+                    <span class="composer-tag"><?= icon('edit', 13) ?>Editing task · press Esc to cancel</span>
+                <?php endif; ?>
+
+                <?php if ($error): ?>
+                    <p class="alert" role="alert"><?= icon('alert', 16) ?><?= e($error) ?></p>
+                <?php endif; ?>
+
+                <div class="composer-main">
+                    <div class="composer-icon"><?= icon($editingTask ? 'edit' : 'plus', 18) ?></div>
+                    <label for="task-input" class="sr-only">Task</label>
+                    <input class="composer-input" id="task-input" type="text" name="task" value="<?= e($v['text']) ?>"
+                           placeholder="What do you need to get done?" autocomplete="off" required <?= $editingTask ? 'autofocus' : '' ?>>
+                </div>
+
+                <div class="composer-bar">
+                    <div class="field field-subject">
+                        <?= icon('book', 16) ?>
+                        <input class="control" type="text" name="subject" value="<?= e($v['subject']) ?>"
+                               placeholder="Subject" maxlength="30" list="subject-options" aria-label="Subject" autocomplete="off">
+                        <datalist id="subject-options">
+                            <?php foreach ($subjects as $s): ?><option value="<?= e($s['name']) ?>"><?php endforeach; ?>
+                        </datalist>
+                    </div>
+
+                    <div class="segmented" role="radiogroup" aria-label="Priority">
+                        <?php foreach (array_keys(PRIORITIES) as $p): ?>
+                            <label class="seg-<?= $p ?>">
+                                <input type="radio" name="priority" value="<?= $p ?>" <?= $v['priority'] === $p ? 'checked' : '' ?>>
+                                <span><?= ucfirst($p) ?></span>
+                            </label>
+                        <?php endforeach; ?>
+                    </div>
+
+                    <div class="field field-date">
+                        <?= icon('calendar', 16) ?>
+                        <input class="control" type="date" name="due" value="<?= e($v['due']) ?>" aria-label="Due date">
+                    </div>
+
+                    <div class="composer-actions">
+                        <?php if ($editingTask): ?>
+                            <a href="<?= link_to() ?>" class="btn btn-ghost" id="cancel-edit">Cancel</a>
+                        <?php endif; ?>
+                        <button type="submit" class="btn btn-primary">
+                            <?= icon($editingTask ? 'check' : 'plus', 16) ?><?= $editingTask ? 'Save changes' : 'Add task' ?>
+                        </button>
+                    </div>
+                </div>
+            </form>
+
+            <section class="card">
+                <div class="tasks-head">
+                    <div class="tasks-head-top">
+                        <div>
+                            <h2 class="card-title">My Tasks</h2>
+                            <p class="card-sub">
+                                <?= $search !== '' ? 'Results for “' . e($search) . '”' : 'Everything on your plate this semester' ?>
+                            </p>
+                        </div>
+                        <nav class="tabs" aria-label="Filter tasks">
+                            <?php foreach ($tabs as $key => [$label, $count]): ?>
+                                <a class="tab <?= $filter === $key ? 'active' : '' ?>" href="<?= link_to(['filter' => $key]) ?>"
+                                   <?= $filter === $key ? 'aria-current="page"' : '' ?>>
+                                    <?= $label ?>
+                                    <span class="tab-count <?= $key === 'overdue' && $count ? 'alert-count' : '' ?>"><?= $count ?></span>
+                                </a>
+                            <?php endforeach; ?>
+                        </nav>
+                    </div>
+
+                    <form method="GET" class="toolbar" role="search">
+                        <?php if ($filter !== 'all'): ?>
+                            <input type="hidden" name="filter" value="<?= e($filter) ?>">
+                        <?php endif; ?>
+                        <div class="field search">
+                            <?= icon('search', 16) ?>
+                            <input class="control" type="search" name="q" id="search-input" value="<?= e($search) ?>"
+                                   placeholder="Search tasks or subjects" aria-label="Search tasks">
+                            <span class="search-end">
+                                <?php if ($search !== ''): ?>
+                                    <a href="<?= link_to(['q' => '']) ?>" class="icon-btn search-clear" aria-label="Clear search"><?= icon('x', 14) ?></a>
+                                <?php else: ?>
+                                    <kbd class="kbd">/</kbd>
+                                <?php endif; ?>
+                            </span>
+                        </div>
+                        <div class="field field-sort">
+                            <?= icon('sort', 16) ?>
+                            <select class="control" name="sort" aria-label="Sort tasks" onchange="this.form.submit()">
+                                <option value="newest" <?= $sort === 'newest' ? 'selected' : '' ?>>Newest first</option>
+                                <option value="due" <?= $sort === 'due' ? 'selected' : '' ?>>Due date</option>
+                                <option value="priority" <?= $sort === 'priority' ? 'selected' : '' ?>>Priority</option>
+                                <option value="az" <?= $sort === 'az' ? 'selected' : '' ?>>A to Z</option>
+                            </select>
+                            <?= icon('chevron', 16, 'chevron') ?>
+                        </div>
+                        <button type="submit" class="sr-only">Search</button>
                     </form>
+                </div>
 
-                    <div class="task-main">
-                        <span class="task-text"><?= htmlspecialchars($task['text']) ?></span>
-                        <div class="meta">
-                            <span class="badge <?= $task['priority'] ?>"><?= ucfirst($task['priority']) ?></span>
-                            <?php if ($task['subject'] !== ''): ?>
-                                <span class="badge"><?= htmlspecialchars($task['subject']) ?></span>
+                <?php if (empty($tasks)): ?>
+                    <div class="empty">
+                        <div class="empty-icon"><?= icon($total ? 'search' : 'inbox', 26) ?></div>
+                        <?php if ($total): ?>
+                            <h3>Nothing here</h3>
+                            <p>No tasks match this view. Try another filter or search.</p>
+                        <?php else: ?>
+                            <h3>No tasks yet</h3>
+                            <p>Add your first task above to start tracking your progress.</p>
+                        <?php endif; ?>
+                    </div>
+                <?php else: ?>
+                    <ul class="task-list">
+                        <?php foreach ($tasks as $task):
+                            $due = dueInfo($task);
+                            $isEditing = $editingTask && $editingTask['id'] === $task['id'];
+                        ?>
+                            <li class="task p-<?= $task['priority'] ?> <?= $task['completed'] ? 'completed' : '' ?> <?= $isEditing ? 'is-editing' : '' ?>">
+
+                                <form method="POST">
+                                    <?= csrf() ?>
+                                    <input type="hidden" name="action" value="toggle">
+                                    <input type="hidden" name="id" value="<?= e($task['id']) ?>">
+                                    <button type="submit" class="check" aria-pressed="<?= $task['completed'] ? 'true' : 'false' ?>"
+                                            aria-label="<?= $task['completed'] ? 'Mark as not done' : 'Mark as done' ?>"
+                                            title="<?= $task['completed'] ? 'Mark as not done' : 'Mark as done' ?>">
+                                        <?= icon('check', 14) ?>
+                                    </button>
+                                </form>
+
+                                <div class="task-body">
+                                    <p class="task-title"><?= e($task['text']) ?></p>
+                                    <div class="chips">
+                                        <span class="chip chip-prio <?= $task['priority'] ?>"><?= ucfirst($task['priority']) ?></span>
+                                        <?php if ($task['subject'] !== ''): ?>
+                                            <span class="chip chip-subject"><?= icon('book', 12) ?><?= e($task['subject']) ?></span>
+                                        <?php endif; ?>
+                                        <?php if ($due): ?>
+                                            <span class="chip chip-due <?= $due['tone'] ?>" title="<?= date('l, F j, Y', strtotime($task['due'])) ?>">
+                                                <?= icon('calendar', 12) ?><?= $due['label'] ?>
+                                            </span>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+
+                                <div class="task-actions">
+                                    <a class="icon-btn" href="<?= link_to(['edit' => $task['id']]) ?>#composer" aria-label="Edit task" title="Edit"><?= icon('edit', 16) ?></a>
+                                    <form method="POST" onsubmit="return confirm('Delete this task?');">
+                                        <?= csrf() ?>
+                                        <input type="hidden" name="action" value="delete">
+                                        <input type="hidden" name="id" value="<?= e($task['id']) ?>">
+                                        <button type="submit" class="icon-btn danger" aria-label="Delete task" title="Delete"><?= icon('trash', 16) ?></button>
+                                    </form>
+                                </div>
+
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+
+                <?php if ($total): ?>
+                    <div class="tasks-foot">
+                        <span>Showing <?= count($tasks) ?> of <?= $total ?> <?= $total === 1 ? 'task' : 'tasks' ?></span>
+                        <div class="bulk">
+                            <?php if ($pending): ?>
+                                <form method="POST">
+                                    <?= csrf() ?>
+                                    <input type="hidden" name="action" value="complete_all">
+                                    <button type="submit" class="btn btn-ghost btn-sm"><?= icon('checks', 15) ?>Mark all done</button>
+                                </form>
                             <?php endif; ?>
-                            <?php if ($task['due'] !== ''): ?>
-                                <span class="due <?= isOverdue($task) ? 'late' : '' ?>">
-                                    <?= isOverdue($task) ? 'Overdue: ' : ($task['due'] === date('Y-m-d') ? 'Due today: ' : 'Due: ') ?>
-                                    <?= date('M j, Y', strtotime($task['due'])) ?>
-                                </span>
+                            <?php if ($done): ?>
+                                <form method="POST" onsubmit="return confirm('Remove all completed tasks?');">
+                                    <?= csrf() ?>
+                                    <input type="hidden" name="action" value="clear_completed">
+                                    <button type="submit" class="btn btn-ghost btn-sm danger"><?= icon('trash', 15) ?>Clear completed</button>
+                                </form>
                             <?php endif; ?>
                         </div>
                     </div>
+                <?php endif; ?>
+            </section>
 
-                    <div class="actions">
-                        <a class="edit" href="<?= link_to(['edit' => $task['id']]) ?>">Edit</a>
+        </main>
 
-                        <form method="POST" class="delete-form" onsubmit="return confirm('Delete this task?');">
-                            <?= csrf() ?>
-                            <input type="hidden" name="action" value="delete">
-                            <input type="hidden" name="id" value="<?= htmlspecialchars($task['id']) ?>">
-                            <button type="submit" class="delete">Delete</button>
-                        </form>
+        <aside class="side">
+
+            <section class="card">
+                <div class="card-head">
+                    <div>
+                        <h2 class="card-title">Up next</h2>
+                        <p class="card-sub">Closest deadlines</p>
                     </div>
+                </div>
+                <div class="card-body">
+                    <?php if ($upcoming): ?>
+                        <ul class="mini-list">
+                            <?php foreach ($upcoming as $t): $due = dueInfo($t); ?>
+                                <li class="mini-item">
+                                    <div class="date-tile <?= $due['tone'] ?>">
+                                        <span class="m"><?= date('M', strtotime($t['due'])) ?></span>
+                                        <span class="d"><?= date('j', strtotime($t['due'])) ?></span>
+                                    </div>
+                                    <div class="mini-body">
+                                        <p class="mini-title"><?= e($t['text']) ?></p>
+                                        <p class="mini-meta <?= $due['tone'] ?>">
+                                            <?= $due['label'] ?><?= $t['subject'] !== '' ? ' · ' . e($t['subject']) : '' ?>
+                                        </p>
+                                    </div>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php else: ?>
+                        <p class="side-empty">No upcoming deadlines. Add a due date to a task to see it here.</p>
+                    <?php endif; ?>
+                </div>
+            </section>
 
-                </li>
-            <?php endforeach; ?>
-        </ul>
+            <section class="card">
+                <div class="card-head">
+                    <div>
+                        <h2 class="card-title">Subjects</h2>
+                        <p class="card-sub">Progress by class</p>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <?php if ($subjects): ?>
+                        <ul class="subjects">
+                            <?php foreach ($subjects as $s): $pct = round($s['done'] / $s['total'] * 100); ?>
+                                <li>
+                                    <a class="subject-link" href="<?= link_to(['q' => $s['name']]) ?>" title="Show <?= e($s['name']) ?> tasks">
+                                        <div class="subject-top">
+                                            <span class="subject-name"><?= e($s['name']) ?></span>
+                                            <span class="subject-count"><?= $s['done'] ?>/<?= $s['total'] ?></span>
+                                        </div>
+                                        <div class="bar"><span style="width: <?= $pct ?>%"></span></div>
+                                    </a>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php else: ?>
+                        <p class="side-empty">Tag tasks with a subject to track progress per class.</p>
+                    <?php endif; ?>
+                </div>
+            </section>
 
-        <?php if ($total): ?>
-            <div class="bulk">
-                <?php if ($pending): ?>
-                    <form method="POST" class="bulk-form">
-                        <?= csrf() ?>
-                        <input type="hidden" name="action" value="complete_all">
-                        <button type="submit" class="btn-light">Mark all as done</button>
-                    </form>
-                <?php endif; ?>
-                <?php if ($done): ?>
-                    <form method="POST" class="bulk-form" onsubmit="return confirm('Remove all completed tasks?');">
-                        <?= csrf() ?>
-                        <input type="hidden" name="action" value="clear_completed">
-                        <button type="submit" class="btn-light">Clear completed</button>
-                    </form>
-                <?php endif; ?>
-            </div>
-        <?php endif; ?>
-    </section>
+            <section class="card card-shortcuts">
+                <div class="card-head">
+                    <h2 class="card-title">Shortcuts</h2>
+                </div>
+                <div class="card-body">
+                    <ul class="shortcuts">
+                        <li>New task <kbd class="kbd">N</kbd></li>
+                        <li>Search <kbd class="kbd">/</kbd></li>
+                        <li>Cancel editing <kbd class="kbd">Esc</kbd></li>
+                    </ul>
+                </div>
+            </section>
 
+        </aside>
+    </div>
 </div>
+
+<script>
+(function () {
+    var root = document.documentElement;
+    var taskInput = document.getElementById('task-input');
+    var searchInput = document.getElementById('search-input');
+    var cancelEdit = document.getElementById('cancel-edit');
+
+    // Greeting + date in the visitor's local time
+    var now = new Date();
+    var h = now.getHours();
+    document.querySelector('[data-greeting]').textContent =
+        h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+    document.querySelector('[data-today]').textContent =
+        now.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+
+    // Theme toggle
+    document.getElementById('theme-toggle').addEventListener('click', function () {
+        var current = root.dataset.theme ||
+            (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        var next = current === 'dark' ? 'light' : 'dark';
+        root.dataset.theme = next;
+        try { localStorage.setItem('theme', next); } catch (e) {}
+    });
+
+    // "New task" buttons focus the composer
+    document.querySelectorAll('[data-focus-new]').forEach(function (el) {
+        el.addEventListener('click', function () { setTimeout(function () { taskInput.focus(); }, 0); });
+    });
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', function (e) {
+        var tag = (e.target.tagName || '').toLowerCase();
+        var typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
+
+        if (e.key === 'Escape' && cancelEdit && e.target !== searchInput) {
+            location.href = cancelEdit.href;
+            return;
+        }
+        if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+
+        if (e.key === '/') { e.preventDefault(); searchInput.focus(); searchInput.select(); }
+        else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); taskInput.focus(); }
+    });
+
+    // Keep scroll position when an action reloads the page
+    try {
+        var y = sessionStorage.getItem('scrollY');
+        if (y !== null && !location.hash) window.scrollTo(0, +y);
+        sessionStorage.removeItem('scrollY');
+    } catch (e) {}
+
+    document.querySelectorAll('form[method="POST"]').forEach(function (form) {
+        form.addEventListener('submit', function (e) {
+            if (e.defaultPrevented) return;
+            try { sessionStorage.setItem('scrollY', String(window.scrollY)); } catch (err) {}
+        });
+    });
+})();
+</script>
 
 </body>
 </html>
