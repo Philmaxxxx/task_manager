@@ -229,9 +229,9 @@ $subjects = array_slice($subjects, 0, 5);
 
 // Hero summary line
 if ($total === 0) {
-    $summary = 'Your planner is empty. Add your first task to get the semester rolling.';
+    $summary = 'Your planner is empty. Add your first task to get the semester oten rolling.';
 } elseif ($pending === 0) {
-    $summary = 'All caught up — every task is done. Great work!';
+    $summary = 'All caught up — every task is done. Great work!Oten hahahaha';
 } else {
     $parts = [];
     if ($dueToday) $parts[] = "$dueToday due today";
